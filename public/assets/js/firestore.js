@@ -1,4 +1,4 @@
-import {
+﻿import {
   addDoc,
   collection,
   deleteDoc,
@@ -15,6 +15,36 @@ import {
 import { db } from "./firebase.js";
 import { currentUser } from "./auth.js";
 
+function firestoreMessage(error) {
+  const code = error?.code || "";
+  if (code === "permission-denied") {
+    return "Firestore rechazo la operacion. Revisa que hayas publicado las reglas en Firestore Database > Reglas.";
+  }
+  if (code === "unavailable") {
+    return "No se pudo conectar con Firestore. Revisa tu internet o recarga la pagina.";
+  }
+  if (code === "not-found") {
+    return "Firestore Database no existe todavia en este proyecto. Crea la base de datos en Firebase.";
+  }
+  if (code === "failed-precondition") {
+    return "Firestore necesita una configuracion o indice adicional. Revisa el mensaje de Firebase en consola.";
+  }
+  return error?.message || "Ocurrio un error al conectar con Firestore.";
+}
+
+async function withFirestoreTimeout(operation, label = "operacion") {
+  const timeout = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(`Firestore tardo demasiado en completar la ${label}. Revisa que Firestore Database exista y que las reglas esten publicadas.`)), 12000);
+  });
+
+  try {
+    return await Promise.race([operation, timeout]);
+  } catch (error) {
+    console.error("Firestore error:", error);
+    throw new Error(firestoreMessage(error));
+  }
+}
+
 function baseCreate() {
   const user = currentUser();
   return {
@@ -30,55 +60,69 @@ function baseUpdate() {
 }
 
 export async function listCollection(name, orderField = "createdAt") {
-  const snapshot = await getDocs(query(collection(db, name), orderBy(orderField, "desc")));
+  const snapshot = await withFirestoreTimeout(
+    getDocs(query(collection(db, name), orderBy(orderField, "desc"))),
+    `consulta de ${name}`
+  );
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
 export async function getRecord(name, id) {
-  const snapshot = await getDoc(doc(db, name, id));
+  const snapshot = await withFirestoreTimeout(getDoc(doc(db, name, id)), `consulta de ${name}`);
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 }
 
 export async function createCategory(data) {
-  return addDoc(collection(db, "event_categories"), { ...data, ...baseCreate() });
+  return withFirestoreTimeout(addDoc(collection(db, "event_categories"), { ...data, ...baseCreate() }), "creacion de categoria");
 }
 
 export async function updateCategory(id, data) {
-  return updateDoc(doc(db, "event_categories", id), { ...data, ...baseUpdate() });
+  return withFirestoreTimeout(updateDoc(doc(db, "event_categories", id), { ...data, ...baseUpdate() }), "actualizacion de categoria");
 }
 
 export async function deleteCategory(id) {
-  return deleteDoc(doc(db, "event_categories", id));
+  return withFirestoreTimeout(deleteDoc(doc(db, "event_categories", id)), "eliminacion de categoria");
 }
 
 export async function createEvent(data) {
-  return addDoc(collection(db, "events"), { ...data, capacity: Number(data.capacity), ...baseCreate() });
+  return withFirestoreTimeout(addDoc(collection(db, "events"), { ...data, capacity: Number(data.capacity), ...baseCreate() }), "creacion de evento");
 }
 
 export async function updateEvent(id, data) {
-  return updateDoc(doc(db, "events", id), { ...data, capacity: Number(data.capacity), ...baseUpdate() });
+  return withFirestoreTimeout(updateDoc(doc(db, "events", id), { ...data, capacity: Number(data.capacity), ...baseUpdate() }), "actualizacion de evento");
 }
 
 export async function changeEventStatus(id, status) {
-  return updateDoc(doc(db, "events", id), { status, ...baseUpdate() });
+  return withFirestoreTimeout(updateDoc(doc(db, "events", id), { status, ...baseUpdate() }), "cambio de estado");
 }
 
 export async function deleteEvent(id) {
-  return deleteDoc(doc(db, "events", id));
+  return withFirestoreTimeout(deleteDoc(doc(db, "events", id)), "eliminacion de evento");
 }
 
 export async function publicEvents() {
-  const snapshot = await getDocs(query(collection(db, "events"), where("status", "==", "published"), orderBy("eventDate", "asc")));
-  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const snapshot = await withFirestoreTimeout(
+    getDocs(query(collection(db, "events"), where("status", "==", "published"))),
+    "consulta de eventos publicos"
+  );
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(a.eventDate || "").localeCompare(String(b.eventDate || "")));
 }
 
 export async function listRegistrations() {
-  const snapshot = await getDocs(query(collection(db, "event_registrations"), orderBy("registeredAt", "desc")));
+  const snapshot = await withFirestoreTimeout(
+    getDocs(query(collection(db, "event_registrations"), orderBy("registeredAt", "desc"))),
+    "consulta de asistentes"
+  );
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
 export async function registrationsByEvent(eventId) {
-  const snapshot = await getDocs(query(collection(db, "event_registrations"), where("eventId", "==", eventId)));
+  const snapshot = await withFirestoreTimeout(
+    getDocs(query(collection(db, "event_registrations"), where("eventId", "==", eventId))),
+    "consulta de asistentes por evento"
+  );
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
@@ -86,12 +130,12 @@ export async function registerAttendee(data) {
   const event = await getRecord("events", data.eventId);
   if (!event || event.status !== "published") throw new Error("El evento no esta disponible para registro.");
 
-  const duplicated = await getDocs(query(
+  const duplicated = await withFirestoreTimeout(getDocs(query(
     collection(db, "event_registrations"),
     where("eventId", "==", data.eventId),
     where("studentEmail", "==", data.studentEmail),
     limit(1)
-  ));
+  )), "validacion de registro duplicado");
   if (!duplicated.empty) throw new Error("Este correo ya esta registrado en el evento.");
 
   const currentRegistrations = await registrationsByEvent(data.eventId);
@@ -99,7 +143,7 @@ export async function registerAttendee(data) {
   if (activeRegistrations.length >= Number(event.capacity)) throw new Error("El cupo maximo del evento ya fue alcanzado.");
 
   const code = `EVH-${Date.now().toString(36).toUpperCase()}`;
-  return addDoc(collection(db, "event_registrations"), {
+  return withFirestoreTimeout(addDoc(collection(db, "event_registrations"), {
     ...data,
     confirmationCode: code,
     status: "registered",
@@ -108,13 +152,14 @@ export async function registerAttendee(data) {
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     createdBy: currentUser() ? currentUser().uid : "public"
-  });
+  }), "registro de asistente");
 }
 
 export async function updateRegistrationStatus(id, status) {
-  return updateDoc(doc(db, "event_registrations", id), { status, active: status !== "cancelled", ...baseUpdate() });
+  return withFirestoreTimeout(updateDoc(doc(db, "event_registrations", id), { status, active: status !== "cancelled", ...baseUpdate() }), "actualizacion de asistente");
 }
 
 export async function deleteRegistration(id) {
-  return deleteDoc(doc(db, "event_registrations", id));
+  return withFirestoreTimeout(deleteDoc(doc(db, "event_registrations", id)), "eliminacion de asistente");
 }
+

@@ -1,4 +1,4 @@
-import {
+﻿import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -54,11 +54,12 @@ export function protectPage() {
 }
 
 export function guestOnly() {
-  onAuthStateChanged(auth, (user) => {
-    if (user) window.location.href = "dashboard.html";
-  });
+  // La sesion puede quedar activa en Firebase, pero login/register se mantienen visibles
+  // para que la demo siempre pida una accion manual del usuario.
+  onAuthStateChanged(auth, () => {});
 }
 
 export function currentUser() {
   return auth.currentUser;
 }
+
